@@ -145,6 +145,46 @@ def detect_red_lines(frame):
 
     return left_line, right_line  # Return the left and right vertical lines.
 
+def detect_carton_lines(frame):
+    # Convert the frame to HSV color space.
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Define HSV ranges for detecting "carton" color (brown shades).
+    lower_brown = np.array([10, 100, 20])  # Lower bound for brown.
+    upper_brown = np.array([20, 255, 200])  # Upper bound for brown.
+
+    # Create a mask for the "carton" color.
+    mask = cv2.inRange(hsv, lower_brown, upper_brown)
+
+    # Enhance the lines using morphological operations.
+    kernel = np.ones((5, 5), np.uint8)  # Create a 5x5 kernel.
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # Close small gaps in the regions.
+    mask = cv2.dilate(mask, kernel, iterations=2)  # Dilate to emphasize thick lines.
+
+    cv2.imshow("Carton Mask", mask)  # Debug: Display the carton mask.
+
+    # Detect edges in the mask using the Canny edge detector.
+    edges = cv2.Canny(mask, 50, 150)
+
+    # Detect straight lines using the Probabilistic Hough Transform.
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 50, minLineLength=80, maxLineGap=30)
+
+    if lines is None:  # If no lines are detected, return None.
+        return None
+
+    # Extract horizontal lines from the detected lines.
+    horizontal_lines = [line[0] for line in lines if abs(line[0][1] - line[0][3]) < 10]  # Filter near-horizontal lines.
+
+    if not horizontal_lines:  # If no horizontal lines are found, return None.
+        return None
+
+    # Find the y-coordinates of all detected horizontal lines.
+    y_coords = [line[1] for line in horizontal_lines]
+
+    # Return the y-coordinate of the line closest to the bottom.
+    return max(y_coords)
+
+
 # Function to calculate the distance from the frame's center to the detected red lines.
 def calculate_distance_to_lines(frame, left_line, right_line):
     height, width, _ = frame.shape  # Get the frame's dimensions (height, width, and channels).
@@ -167,6 +207,7 @@ def process_frame(frame):
     squares = detect_squares(frame)  # Detect squares in the frame.
     crosses = detect_crosses(frame)  # Detect crosses in the frame.
     left_line, right_line = detect_red_lines(frame)  # Detect red lines.
+    closest_carton_y = detect_carton_lines(frame)  # Detect the closest carton line.
 
     # Draw contours for detected squares.
     for cnt, (x, y) in squares:
@@ -184,6 +225,12 @@ def process_frame(frame):
         cv2.line(frame, (right_line[0], right_line[1]), (right_line[2], right_line[3]), (255, 0, 0), 2)  # Draw right line in blue.
         cv2.putText(frame, "Red Line", (left_line[0], left_line[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
         cv2.putText(frame, "Red Line", (right_line[0], right_line[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    # Draw the closest carton line if detected.
+    if closest_carton_y is not None:
+        frame_height, frame_width = frame.shape[:2]
+        cv2.line(frame, (0, closest_carton_y), (frame_width, closest_carton_y), (0, 165, 255), 2)  # Draw carton line in orange.
+        cv2.putText(frame, "Carton Line", (10, closest_carton_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)  # Label it.
 
     return frame  # Return the processed frame with annotations.
 
@@ -230,19 +277,27 @@ if __name__ == "__main__":
             distance_left, distance_right = calculate_distance_to_lines(frame, left_line, right_line)
             frame_center = processed_frame.shape[1] // 2
             if distance_left is not None:
-                if distance_left > frame_center - 100:
+                if distance_left > frame_center - 100 and distance_left < frame_center + 100:
                     vibrate_motor(100)
                     stop_motor()
             if distance_right is not None:
-                if distance_right < frame_center + 100:
+                if distance_right > frame_center - 100 and distance_right < frame_center + 100:
                     vibrate_motor(100)
                     stop_motor()
+            
+            min_y_carton = detect_carton_lines(frame)
+            if min_y_carton is not None:  
+                frame_height = processed_frame.shape[0]  
+                jump_threshold = frame_height * 0.7 
 
-            distances = distance_from_bottom(frame)  # Calculate distances for detected objects.
+                if min_y_carton > jump_threshold:  
+                    play_sound("jump.mp3")  
+            distances = distance_from_bottom(frame) 
 
             if distances:
                 shape, x, y, dist = min((t for t in distances if t is not None), key=lambda t: t[3])
                 if shape == "Cross":  # Check for crosses.
+                    play_sound("cross.mp3")  # Play cross check sound.
                     frame_center = processed_frame.shape[1] // 2  # Horizontal center of the frame.
                     if x < frame_center - 50:
                         play_sound("left.mp3")  # Play left guidance sound.
@@ -252,13 +307,14 @@ if __name__ == "__main__":
                         play_sound("straight.mp3")  # Play straight guidance sound.
 
                 if shape == "Square":  # Check for squares.
+                    play_sound("square.mp3")  # Play square check sound.
                     frame_center = processed_frame.shape[1] // 2  # Horizontal center of the frame.
                     if x < frame_center - 50:
-                        play_sound("straight.mp3")  # Play left guidance sound.
+                        play_sound("straight.mp3")  # Play straight guidance sound.
                     elif x > frame_center + 50:
-                        play_sound("straight.mp3")  # Play right guidance sound.
+                        play_sound("straight.mp3")  # Play straight guidance sound.
                     else:
-                        play_sound("right.mp3")  # Play straight guidance sound.
+                        play_sound("right.mp3")  # Play right guidance sound.
 
 
             cv2.imshow("Processed Frame", processed_frame)  # Show the processed frame.
